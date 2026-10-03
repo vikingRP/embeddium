@@ -203,7 +203,12 @@ public class RenderRegion {
 
     public static class DeviceResources {
         private final GlBufferArena geometryArena;
-        private final GlBufferArena indexArena;
+        /**
+         * VikingRP: the index arena (~580 KB) is only needed by regions holding sorted (translucent) geometry, so it
+         * is created lazily on the first index upload. May be null.
+         */
+        private GlBufferArena indexArena;
+        private final StagingBuffer stagingBuffer;
         private GlTessellation tessellation;
         private GlTessellation indexedTessellation;
 
@@ -216,7 +221,18 @@ public class RenderRegion {
                 stride = ChunkMeshFormats.VANILLA_LIKE.getVertexFormat().getStride();
             }
             this.geometryArena = new GlBufferArena(commandList, REGION_SIZE * 756, stride, stagingBuffer);
-            this.indexArena = new GlBufferArena(commandList, (REGION_SIZE * 378) / 4 * 6, 4, stagingBuffer);
+            this.stagingBuffer = stagingBuffer;
+        }
+
+        /**
+         * {@return the index arena, creating it if needed}
+         */
+        public GlBufferArena getOrCreateIndexArena(CommandList commandList) {
+            if (this.indexArena == null) {
+                this.indexArena = new GlBufferArena(commandList, (REGION_SIZE * 378) / 4 * 6, 4, this.stagingBuffer);
+            }
+
+            return this.indexArena;
         }
 
         public void updateTessellation(CommandList commandList, GlTessellation tessellation) {
@@ -259,20 +275,30 @@ public class RenderRegion {
             return this.geometryArena.getBufferObject();
         }
 
+        /**
+         * {@return the index buffer, or null if no index data was ever uploaded to this region}
+         */
         public GlBuffer getIndexBuffer() {
-            return this.indexArena.getBufferObject();
+            return this.indexArena != null ? this.indexArena.getBufferObject() : null;
         }
 
         public void delete(CommandList commandList) {
             this.deleteTessellations(commandList);
             this.geometryArena.delete(commandList);
-            this.indexArena.delete(commandList);
+
+            if (this.indexArena != null) {
+                this.indexArena.delete(commandList);
+                this.indexArena = null;
+            }
         }
 
         public GlBufferArena getGeometryArena() {
             return this.geometryArena;
         }
 
+        /**
+         * {@return the index arena, or null if it has not been created yet}
+         */
         public GlBufferArena getIndexArena() {
             return this.indexArena;
         }

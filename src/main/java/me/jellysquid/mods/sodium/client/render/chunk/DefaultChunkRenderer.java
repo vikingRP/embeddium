@@ -64,32 +64,46 @@ public class DefaultChunkRenderer extends ShaderChunkRenderer {
 
         this.isIndexedPass = renderPass.isSorted();
 
-        while (iterator.hasNext()) {
-            ChunkRenderList renderList = iterator.next();
+        // VikingRP: the region VAO is no longer unbound after every region; it is unbound once at the end of the pass
+        // (VAO 0 is still restored before leaving, as vanilla and Oculus expect).
+        DrawCommandList activeDrawCommandList = null;
 
-            var region = renderList.getRegion();
-            var storage = region.getStorage(renderPass);
+        try {
+            while (iterator.hasNext()) {
+                ChunkRenderList renderList = iterator.next();
 
-            if (storage == null) {
-                continue;
+                var region = renderList.getRegion();
+                var storage = region.getStorage(renderPass);
+
+                if (storage == null) {
+                    continue;
+                }
+
+                fillCommandBuffer(this.batch, region, storage, renderList, camera, renderPass, useBlockFaceCulling);
+
+                if (this.batch.isEmpty()) {
+                    continue;
+                }
+
+
+
+                if (!this.isIndexedPass) {
+                    this.sharedIndexBuffer.ensureCapacity(commandList, this.batch.getIndexBufferSize());
+                } else if (region.getResources() == null || region.getResources().getIndexBuffer() == null) {
+                    // The index arena is created lazily; without index data there is nothing to draw
+                    continue;
+                }
+
+                var tessellation = this.prepareTessellation(commandList, region);
+
+                setModelMatrixUniforms(shader, region, camera);
+                activeDrawCommandList = executeDrawBatch(commandList, tessellation, this.batch);
             }
-
-            fillCommandBuffer(this.batch, region, storage, renderList, camera, renderPass, useBlockFaceCulling);
-
-            if (this.batch.isEmpty()) {
-                continue;
+        } finally {
+            if (activeDrawCommandList != null) {
+                // Ends the active tessellation and binds VAO 0
+                activeDrawCommandList.flush();
             }
-
-
-
-            if (!this.isIndexedPass) {
-                this.sharedIndexBuffer.ensureCapacity(commandList, this.batch.getIndexBufferSize());
-            }
-
-            var tessellation = this.prepareTessellation(commandList, region);
-
-            setModelMatrixUniforms(shader, region, camera);
-            executeDrawBatch(commandList, tessellation, this.batch);
         }
 
         super.end(renderPass);
@@ -143,6 +157,12 @@ public class DefaultChunkRenderer extends ShaderChunkRenderer {
 
     @SuppressWarnings("IntegerMultiplicationImplicitCastToLong")
     private static void addDrawCommands(MultiDrawBatch batch, long pMeshData, int mask, int indexPointerMask) {
+        if (indexPointerMask == 0) {
+            // Non-sorted pass: draws use the shared quad index buffer, relative to baseVertex
+            addMergedDrawCommands(batch, pMeshData, mask);
+            return;
+        }
+
         final var pBaseVertex = batch.pBaseVertex;
         final var pElementCount = batch.pElementCount;
         final var pElementPointer = batch.pElementPointer;
@@ -155,6 +175,57 @@ public class DefaultChunkRenderer extends ShaderChunkRenderer {
             MemoryUtil.memPutAddress(pElementPointer + (size << 3), SectionRenderDataUnsafe.getIndexOffset(pMeshData, facing) & indexPointerMask);
 
             size += (mask >> facing) & 1;
+        }
+
+        batch.size = size;
+    }
+
+    /**
+     * VikingRP: for passes using the shared quad index buffer, the facings of a section are stored contiguously in the
+     * vertex buffer (POS_X, POS_Y, POS_Z, NEG_X, NEG_Y, NEG_Z, UNASSIGNED, see {@link SectionRenderDataStorage}), and
+     * the shared index buffer only references vertices relative to baseVertex. Consecutive visible facings (empty
+     * facings are absorbed) can therefore be drawn with a single command: baseVertex of the first facing and the sum
+     * of the element counts. This never produces more commands than the per-facing path, so the batch capacity holds.
+     */
+    @SuppressWarnings("IntegerMultiplicationImplicitCastToLong")
+    private static void addMergedDrawCommands(MultiDrawBatch batch, long pMeshData, int mask) {
+        final var pBaseVertex = batch.pBaseVertex;
+        final var pElementCount = batch.pElementCount;
+        final var pElementPointer = batch.pElementPointer;
+
+        int size = batch.size;
+
+        int runBaseVertex = 0;
+        int runElementCount = 0;
+        boolean runOpen = false;
+
+        for (int facing = 0; facing < ModelQuadFacing.COUNT; facing++) {
+            int elementCount = SectionRenderDataUnsafe.getElementCount(pMeshData, facing);
+
+            if (((mask >> facing) & 1) != 0) {
+                if (!runOpen) {
+                    runBaseVertex = SectionRenderDataUnsafe.getVertexOffset(pMeshData, facing);
+                    runElementCount = 0;
+                    runOpen = true;
+                }
+
+                runElementCount += elementCount;
+            } else if (elementCount != 0 && runOpen) {
+                // Culled, non-empty facing: it breaks the contiguous range
+                MemoryUtil.memPutInt(pBaseVertex + (size << 2), runBaseVertex);
+                MemoryUtil.memPutInt(pElementCount + (size << 2), runElementCount);
+                MemoryUtil.memPutAddress(pElementPointer + (size << 3), 0L);
+                size++;
+
+                runOpen = false;
+            }
+        }
+
+        if (runOpen) {
+            MemoryUtil.memPutInt(pBaseVertex + (size << 2), runBaseVertex);
+            MemoryUtil.memPutInt(pElementCount + (size << 2), runElementCount);
+            MemoryUtil.memPutAddress(pElementPointer + (size << 3), 0L);
+            size++;
         }
 
         batch.size = size;
@@ -274,10 +345,14 @@ public class DefaultChunkRenderer extends ShaderChunkRenderer {
         });
     }
 
-    private static void executeDrawBatch(CommandList commandList, GlTessellation tessellation, MultiDrawBatch batch) {
-        try (DrawCommandList drawCommandList = commandList.beginTessellating(tessellation)) {
-            drawCommandList.multiDrawElementsBaseVertex(batch, GlIndexType.UNSIGNED_INT);
-        }
+    /**
+     * Binds the region tessellation (the state tracker skips redundant VAO binds) and issues the batch. The caller is
+     * responsible for flushing the returned draw command list once the whole pass is done, which unbinds the VAO.
+     */
+    private static DrawCommandList executeDrawBatch(CommandList commandList, GlTessellation tessellation, MultiDrawBatch batch) {
+        DrawCommandList drawCommandList = commandList.beginTessellating(tessellation);
+        drawCommandList.multiDrawElementsBaseVertex(batch, GlIndexType.UNSIGNED_INT);
+        return drawCommandList;
     }
 
     @Override

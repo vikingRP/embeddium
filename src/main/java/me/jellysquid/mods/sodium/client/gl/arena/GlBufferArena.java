@@ -9,7 +9,6 @@ import me.jellysquid.mods.sodium.client.gl.device.CommandList;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -269,12 +268,20 @@ public class GlBufferArena {
     }
 
     public boolean upload(CommandList commandList, Stream<PendingUpload> stream) {
+        List<PendingUpload> uploads = stream.collect(Collectors.toList());
+        return this.upload(commandList, uploads);
+    }
+
+    /**
+     * Uploads the given pending uploads. The given collection is not modified.
+     */
+    public boolean upload(CommandList commandList, Collection<PendingUpload> uploads) {
         // Record the buffer object before we start any work
         // If the arena needs to re-allocate a buffer, this will allow us to check and return an appropriate flag
         GlBuffer buffer = this.arenaBuffer;
 
-        // A linked list is used as we'll be randomly removing elements and want O(1) performance
-        List<PendingUpload> queue = stream.collect(Collectors.toCollection(LinkedList::new));
+        // ArrayList#removeIf compacts in a single linear pass, no need for a linked list
+        List<PendingUpload> queue = new ArrayList<>(uploads);
 
         // Try to upload all of the data into free segments first
         this.tryUploads(commandList, queue);
@@ -282,9 +289,13 @@ public class GlBufferArena {
         // If we weren't able to upload some buffers, they will have been left behind in the queue
         if (!queue.isEmpty()) {
             // Calculate the amount of memory needed for the remaining uploads
-            int remainingElements = (int)(queue.stream()
-                    .mapToLong(upload -> upload.getDataBuffer().getLength())
-                    .sum() / this.stride);
+            long remainingBytes = 0;
+
+            for (int i = 0; i < queue.size(); i++) {
+                remainingBytes += queue.get(i).getDataBuffer().getLength();
+            }
+
+            int remainingElements = (int) (remainingBytes / this.stride);
 
             // Ask the arena to grow to accommodate the remaining uploads
             // This will force a re-allocation and compaction, which will leave us a continuous free segment

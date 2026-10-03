@@ -392,28 +392,88 @@ public class RenderSectionManager {
         var deferredSorts = new ChunkJobCollector(Math.max(4, this.builder.getSchedulingBudget() * 4), this.buildResults::add);
         this.submitRebuildTasks(updateImmediately ? blockingRebuilds : deferredSorts, ChunkUpdateType.SORT);
 
+        // Blocking (important / immediate) rebuilds must be visible this frame: disable the upload budget
+        this.bypassUploadBudget = updateImmediately || blockingRebuilds.hasSubmittedJobs();
+
         blockingRebuilds.awaitCompletion(this.builder);
     }
 
+    /**
+     * VikingRP: maximum amount of mesh data (vertex + index bytes) uploaded per frame, matching the size of the mapped
+     * staging buffer. Results beyond the budget are kept for the next frame. At least one result is always uploaded.
+     */
+    private static final long UPLOAD_BUDGET_BYTES = 16L * 1024 * 1024;
+
+    /**
+     * Build results deferred by the upload budget, in arrival order. Only the newest result of each section is kept.
+     */
+    private ArrayList<ChunkBuildOutput> deferredUploads = new ArrayList<>();
+
+    private boolean bypassUploadBudget;
+
     public void uploadChunks() {
         var results = this.collectChunkBuildResults();
+
+        if (!this.deferredUploads.isEmpty()) {
+            // Older deferred results first, so that newer results for the same section supersede them
+            var merged = this.deferredUploads;
+            merged.addAll(results);
+            results = merged;
+            this.deferredUploads = new ArrayList<>();
+        }
 
         if (results.isEmpty()) {
             return;
         }
 
-        this.processChunkBuildResults(results);
+        var filtered = filterChunkBuildResults(results);
+        List<ChunkBuildOutput> toUpload = filtered;
+        ReferenceOpenHashSet<ChunkBuildOutput> deferred = null;
+
+        if (!this.bypassUploadBudget) {
+            long bytes = 0;
+
+            for (int i = 0; i < filtered.size(); i++) {
+                bytes += getUploadSize(filtered.get(i));
+
+                if (bytes > UPLOAD_BUDGET_BYTES && i > 0) {
+                    toUpload = filtered.subList(0, i);
+                    deferred = new ReferenceOpenHashSet<>(filtered.subList(i, filtered.size()));
+                    this.deferredUploads.addAll(filtered.subList(i, filtered.size()));
+                    break;
+                }
+            }
+        }
+
+        this.processFilteredChunkBuildResults(toUpload);
 
         for (var result : results) {
-            result.delete();
+            // Superseded/discarded results are freed too; deferred ones are kept for the next frame
+            if (deferred == null || !deferred.contains(result)) {
+                result.delete();
+            }
         }
 
         this.needsUpdate = true;
     }
 
-    private void processChunkBuildResults(ArrayList<ChunkBuildOutput> results) {
-        var filtered = filterChunkBuildResults(results);
+    private static long getUploadSize(ChunkBuildOutput result) {
+        long size = 0;
 
+        for (BuiltSectionMeshParts mesh : result.meshes.values()) {
+            if (mesh.getVertexData() != null) {
+                size += mesh.getVertexData().getLength();
+            }
+
+            if (mesh.getIndexData() != null) {
+                size += mesh.getIndexData().getLength();
+            }
+        }
+
+        return size;
+    }
+
+    private void processFilteredChunkBuildResults(List<ChunkBuildOutput> filtered) {
         this.regions.uploadMeshes(RenderDevice.INSTANCE.createCommandList(), filtered);
 
         for (var result : filtered) {
@@ -565,6 +625,12 @@ public class RenderSectionManager {
         for (var result : this.collectChunkBuildResults()) {
             result.delete(); // delete resources for any pending tasks (including those that were cancelled)
         }
+
+        for (var result : this.deferredUploads) {
+            result.delete(); // results deferred by the upload budget
+        }
+
+        this.deferredUploads.clear();
 
         this.sectionsWithGlobalEntities.clear();
         this.resetRenderLists();

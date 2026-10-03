@@ -2,6 +2,7 @@ package me.jellysquid.mods.sodium.client.render.chunk.compile.pipeline;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import me.jellysquid.mods.sodium.client.SodiumClientMod;
 import me.jellysquid.mods.sodium.client.compat.ccl.SinkingVertexBuilder;
 import me.jellysquid.mods.sodium.client.model.color.ColorProvider;
 import me.jellysquid.mods.sodium.client.model.color.ColorProviderRegistry;
@@ -11,6 +12,7 @@ import me.jellysquid.mods.sodium.client.model.light.LightPipelineProvider;
 import me.jellysquid.mods.sodium.client.model.light.data.QuadLightData;
 import me.jellysquid.mods.sodium.client.model.quad.BakedQuadView;
 import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadFacing;
+import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadFlags;
 import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadOrientation;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.ChunkBuildBuffers;
 import me.jellysquid.mods.sodium.client.render.chunk.compile.buffers.ChunkModelBuilder;
@@ -33,6 +35,9 @@ import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.phys.Vec3;
 import org.embeddedt.embeddium.api.BlockRendererRegistry;
 import org.embeddedt.embeddium.api.model.EmbeddiumBakedModelExtension;
+import org.embeddedt.embeddium.impl.render.chunk.sprite.SpriteTransparencyLevel;
+import org.embeddedt.embeddium.impl.render.chunk.sprite.SpriteTransparencyLevelHolder;
+import org.embeddedt.embeddium.render.ShaderModBridge;
 import org.embeddedt.embeddium.render.chunk.ChunkColorWriter;
 import org.embeddedt.embeddium.render.frapi.FRAPIModelUtils;
 import org.embeddedt.embeddium.render.frapi.FRAPIRenderHandler;
@@ -68,6 +73,15 @@ public class BlockRenderer {
 
     private final ChunkColorWriter colorEncoder = ChunkColorWriter.get();
 
+    private final boolean useRenderPassOptimization;
+
+    /**
+     * Tracks whether the render pass optimization may be applied to the quad list currently being emitted. It is
+     * disabled when quads of a list (or of any culled face, for the null cullface) have decreasing transparency
+     * levels, as moving a later, more opaque layer into an earlier pass would draw it underneath the previous layers.
+     */
+    private boolean allowPassOptimization;
+
     public BlockRenderer(ColorProviderRegistry colorRegistry, LightPipelineProvider lighters) {
         this.colorProviderRegistry = colorRegistry;
         this.lighters = lighters;
@@ -75,6 +89,7 @@ public class BlockRenderer {
         this.occlusionCache = new BlockOcclusionCache();
         this.useAmbientOcclusion = Minecraft.useAmbientOcclusion();
         this.fabricModelRenderingHandler = FRAPIRenderHandler.INDIGO_PRESENT ? new IndigoBlockRenderContext(this.occlusionCache, lighters.getLightData()) : null;
+        this.useRenderPassOptimization = SodiumClientMod.options().performance.useRenderPassOptimization && !ShaderModBridge.areShadersEnabled();
     }
 
     public void renderModel(BlockRenderContext ctx, ChunkBuildBuffers buffers) {
@@ -117,17 +132,23 @@ public class BlockRenderer {
         }
 
         boolean canReorientNullCullface = true;
+        boolean canOptimizePassNullCullface = this.useRenderPassOptimization;
 
         for (Direction face : DirectionUtil.ALL_DIRECTIONS) {
             List<BakedQuad> quads = this.getGeometry(ctx, face);
 
             if (!quads.isEmpty() && this.isFaceVisible(ctx, face)) {
                 this.useReorienting = true;
-                this.renderQuadList(ctx, material, lighter, colorizer, renderOffset, meshBuilder, quads, face);
+                this.allowPassOptimization = this.useRenderPassOptimization;
+                this.renderQuadList(ctx, material, lighter, colorizer, renderOffset, buffers, meshBuilder, quads, face);
                 if (!this.useReorienting) {
                     // Reorienting was disabled on this side, make sure it's disabled for the null cullface too, in case
                     // a mod layers textures in different lists
                     canReorientNullCullface = false;
+                }
+                if (!this.allowPassOptimization) {
+                    // Same reasoning for the render pass optimization (multi-layer models, upstream fcd51372)
+                    canOptimizePassNullCullface = false;
                 }
             }
         }
@@ -136,7 +157,8 @@ public class BlockRenderer {
 
         if (!all.isEmpty()) {
             this.useReorienting = canReorientNullCullface;
-            this.renderQuadList(ctx, material, lighter, colorizer, renderOffset, meshBuilder, all, null);
+            this.allowPassOptimization = canOptimizePassNullCullface;
+            this.renderQuadList(ctx, material, lighter, colorizer, renderOffset, buffers, meshBuilder, all, null);
         }
     }
 
@@ -189,13 +211,70 @@ public class BlockRenderer {
         return true;
     }
 
+    private static SpriteTransparencyLevel getQuadTransparencyLevel(BakedQuadView quad) {
+        if ((quad.getFlags() & ModelQuadFlags.IS_PASS_OPTIMIZABLE) == 0 || quad.getSprite() == null) {
+            return SpriteTransparencyLevel.TRANSLUCENT;
+        }
+
+        return SpriteTransparencyLevelHolder.getTransparencyLevel(quad.getSprite().contents());
+    }
+
+    /**
+     * {@return false if the quads in the given list have decreasing transparency levels, in which case moving some
+     * of them to another render pass could change the visible layering order}
+     */
+    private static boolean checkQuadsHaveIncreasingTransparency(List<BakedQuad> quads) {
+        int quadsSize = quads.size();
+
+        if (quadsSize >= 2) {
+            var highestSeenLevel = SpriteTransparencyLevel.OPAQUE;
+
+            // noinspection ForLoopReplaceableByForEach
+            for (int i = 0; i < quadsSize; i++) {
+                var seenLevel = getQuadTransparencyLevel((BakedQuadView) quads.get(i));
+
+                if (seenLevel.ordinal() < highestSeenLevel.ordinal()) {
+                    return false;
+                }
+
+                highestSeenLevel = seenLevel;
+            }
+        }
+
+        return true;
+    }
+
+    private ChunkModelBuilder chooseOptimalBuilder(Material defaultMaterial, ChunkBuildBuffers buffers, ChunkModelBuilder defaultBuilder, BakedQuadView quad) {
+        if (defaultMaterial == DefaultMaterials.SOLID || !this.allowPassOptimization || (quad.getFlags() & ModelQuadFlags.IS_PASS_OPTIMIZABLE) == 0 || quad.getSprite() == null) {
+            // No improvement possible
+            return defaultBuilder;
+        }
+
+        SpriteTransparencyLevel level = SpriteTransparencyLevelHolder.getTransparencyLevel(quad.getSprite().contents());
+
+        if (level == SpriteTransparencyLevel.OPAQUE && defaultMaterial.pass.supportsFragmentDiscard()) {
+            // Can use solid with no visual difference
+            return buffers.get(DefaultMaterials.SOLID);
+        } else if (level == SpriteTransparencyLevel.TRANSPARENT && defaultMaterial == DefaultMaterials.TRANSLUCENT) {
+            // Can use cutout_mipped with no visual difference
+            return buffers.get(DefaultMaterials.CUTOUT_MIPPED);
+        } else {
+            // Have to use default
+            return defaultBuilder;
+        }
+    }
+
     private void renderQuadList(BlockRenderContext ctx, Material material, LightPipeline lighter, ColorProvider<BlockState> colorizer, Vec3 offset,
-                                ChunkModelBuilder builder, List<BakedQuad> quads, Direction cullFace) {
+                                ChunkBuildBuffers buffers, ChunkModelBuilder defaultBuilder, List<BakedQuad> quads, Direction cullFace) {
 
         if(!checkQuadsHaveSameLightingConfig(quads)) {
             // Disable reorienting if quads use different light configurations, as otherwise layered quads
             // may be triangulated differently from others in the stack, and that will cause z-fighting.
             this.useReorienting = false;
+        }
+
+        if (this.allowPassOptimization && material != DefaultMaterials.SOLID && !checkQuadsHaveIncreasingTransparency(quads)) {
+            this.allowPassOptimization = false;
         }
 
         // This is a very hot allocation, iterate over it manually
@@ -205,6 +284,8 @@ public class BlockRenderer {
 
             final var lightData = this.getVertexLight(ctx, quad.hasAmbientOcclusion() ? lighter : this.lighters.getLighter(LightMode.FLAT), cullFace, quad);
             final var vertexColors = this.getVertexColors(ctx, colorizer, quad);
+
+            ChunkModelBuilder builder = this.chooseOptimalBuilder(material, buffers, defaultBuilder, quad);
 
             this.writeGeometry(ctx, builder, offset, material, quad, vertexColors, lightData);
 
