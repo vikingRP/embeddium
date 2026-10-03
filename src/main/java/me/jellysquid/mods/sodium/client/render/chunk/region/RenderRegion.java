@@ -13,6 +13,8 @@ import me.jellysquid.mods.sodium.client.render.chunk.data.SectionRenderDataStora
 import me.jellysquid.mods.sodium.client.render.chunk.lists.ChunkRenderList;
 import me.jellysquid.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
 import me.jellysquid.mods.sodium.client.render.chunk.vertex.format.ChunkMeshFormats;
+import me.jellysquid.mods.sodium.client.render.viewport.Viewport;
+import me.jellysquid.mods.sodium.client.render.viewport.frustum.Frustum;
 import me.jellysquid.mods.sodium.client.util.MathUtil;
 import net.minecraft.core.SectionPos;
 import org.apache.commons.lang3.Validate;
@@ -87,6 +89,27 @@ public class RenderRegion {
 
     public int getOriginZ() {
         return this.getChunkZ() << 4;
+    }
+
+    // Section bounds used by the occlusion culler: the section box, plus the maximum model extent and an epsilon
+    private static final float SECTION_MARGIN = 1.0f + 0.125f;
+
+    // Frustum classification of this region, valid for one viewport (main view or shadow pass) at a time
+    private Viewport frustumCacheViewport;
+    private int frustumCacheResult;
+
+    /**
+     * {@return how this region's bounds, including the margin around its sections, relate to the viewport frustum}
+     * When it is not {@link Frustum#INTERSECT}, the same result applies to every section of the region.
+     */
+    public int getFrustumIntersection(Viewport viewport) {
+        if (this.frustumCacheViewport != viewport) {
+            this.frustumCacheViewport = viewport;
+            this.frustumCacheResult = viewport.getBoxIntersection(this.getCenterX(), this.getCenterY(), this.getCenterZ(),
+                    (REGION_WIDTH * 8) + SECTION_MARGIN, (REGION_HEIGHT * 8) + SECTION_MARGIN, (REGION_LENGTH * 8) + SECTION_MARGIN);
+        }
+
+        return this.frustumCacheResult;
     }
 
     public int getCenterX() {

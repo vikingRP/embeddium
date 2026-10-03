@@ -104,6 +104,12 @@ public abstract class BakedQuadMixin implements BakedQuadView {
     }
 
     @Override
+    public void markTrustedSprite() {
+        // Dropping IS_POPULATED makes the next getFlags() derive IS_PASS_OPTIMIZABLE from the trusted bit
+        this.flags = (this.flags | ModelQuadFlags.IS_TRUSTED_SPRITE) & ~ModelQuadFlags.IS_POPULATED;
+    }
+
+    @Override
     public void setFlags(int flags) {
         this.flags = flags;
     }

@@ -431,12 +431,15 @@ public class RenderSectionManager {
         ReferenceOpenHashSet<ChunkBuildOutput> deferred = null;
 
         if (!this.bypassUploadBudget) {
+            // Staging space is only given back once the GPU has consumed earlier copies: going past it would make
+            // every further upload this frame take the slow fallback path (buffer reallocation + copy).
+            long budget = Math.min(UPLOAD_BUDGET_BYTES, this.regions.getStagingBuffer().getAvailableBytes());
             long bytes = 0;
 
             for (int i = 0; i < filtered.size(); i++) {
                 bytes += getUploadSize(filtered.get(i));
 
-                if (bytes > UPLOAD_BUDGET_BYTES && i > 0) {
+                if (bytes > budget && i > 0) {
                     toUpload = filtered.subList(0, i);
                     deferred = new ReferenceOpenHashSet<>(filtered.subList(i, filtered.size()));
                     this.deferredUploads.addAll(filtered.subList(i, filtered.size()));
@@ -454,7 +457,15 @@ public class RenderSectionManager {
             }
         }
 
-        this.needsUpdate = true;
+        // Sort results (index data only) change neither the visibility graph nor the render lists. The graph must
+        // still be searched again if a section got new info, or if an update was requested while it was being built
+        // (the collector skips sections with a build in flight).
+        for (var result : toUpload) {
+            if (result.info != null || result.render.getPendingUpdate() != null) {
+                this.needsUpdate = true;
+                break;
+            }
+        }
     }
 
     private static long getUploadSize(ChunkBuildOutput result) {

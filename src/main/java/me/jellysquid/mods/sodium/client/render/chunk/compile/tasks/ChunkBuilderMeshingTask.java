@@ -13,6 +13,7 @@ import me.jellysquid.mods.sodium.client.render.chunk.data.BuiltSectionInfo;
 import me.jellysquid.mods.sodium.client.render.chunk.data.BuiltSectionMeshParts;
 import me.jellysquid.mods.sodium.client.render.chunk.terrain.DefaultTerrainRenderPasses;
 import me.jellysquid.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
+import me.jellysquid.mods.sodium.client.util.DirectionUtil;
 import me.jellysquid.mods.sodium.client.util.task.CancellationToken;
 import me.jellysquid.mods.sodium.client.world.WorldSlice;
 import me.jellysquid.mods.sodium.client.world.cloned.ChunkRenderContext;
@@ -25,6 +26,7 @@ import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.chunk.VisGraph;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -33,10 +35,12 @@ import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.client.model.data.ModelData;
+import org.embeddedt.embeddium.api.BlockRendererRegistry;
 import org.embeddedt.embeddium.api.ChunkDataBuiltEvent;
 import org.embeddedt.embeddium.chunk.MeshAppenderRenderer;
 import org.embeddedt.embeddium.model.ModelDataSnapshotter;
 import org.embeddedt.embeddium.model.UnwrappableBakedModel;
+import org.embeddedt.embeddium.render.frapi.FRAPIRenderHandler;
 
 import java.util.Map;
 import java.util.Objects;
@@ -67,6 +71,32 @@ public class ChunkBuilderMeshingTask extends ChunkBuilderTask<ChunkBuildOutput> 
         this.buildTime = time;
 
         this.modelDataMap = ModelDataSnapshotter.getModelDataForSection(Minecraft.getInstance().level, this.renderContext.getOrigin());
+    }
+
+    private final BlockPos.MutableBlockPos neighborPos = new BlockPos.MutableBlockPos();
+
+    /**
+     * VikingRP: an opaque full block surrounded by opaque full blocks on all six sides has every culled face hidden,
+     * and its remaining geometry is enclosed, so its model does not need to be rendered at all. This is the case for
+     * most blocks underground. Kept out of {@link #execute} so that its local variable table stays unchanged.
+     * Custom block renderers and FRAPI models may draw outside of these rules, so the check is disabled with them.
+     */
+    private boolean isEnclosedOpaqueBlock(WorldSlice slice, BlockState state, BlockPos pos) {
+        if (FRAPIRenderHandler.INDIGO_PRESENT || BlockRendererRegistry.instance().hasRenderPopulators() || !state.isSolidRender(slice, pos)) {
+            return false;
+        }
+
+        BlockPos.MutableBlockPos neighborPos = this.neighborPos;
+
+        for (Direction direction : DirectionUtil.ALL_DIRECTIONS) {
+            neighborPos.setWithOffset(pos, direction);
+
+            if (!slice.getBlockState(neighborPos).isSolidRender(slice, neighborPos)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public ChunkBuilderMeshingTask withCameraPosition(Vec3 camera) {
@@ -119,7 +149,7 @@ public class ChunkBuilderMeshingTask extends ChunkBuilderTask<ChunkBuildOutput> 
                         blockPos.set(x, y, z);
                         modelOffset.set(x & 15, y & 15, z & 15);
 
-                        if (blockState.getRenderShape() == RenderShape.MODEL) {
+                        if (blockState.getRenderShape() == RenderShape.MODEL && !this.isEnclosedOpaqueBlock(slice, blockState, blockPos)) {
                             BakedModel model = cache.getBlockModels()
                                 .getBlockModel(blockState);
                             ModelData modelData = model.getModelData(context.localSlice(), blockPos, blockState, modelDataMap.getOrDefault(blockPos, ModelData.EMPTY));

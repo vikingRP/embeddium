@@ -12,14 +12,22 @@ public class SpriteUtil {
             return;
         }
 
-        ((SpriteContentsExtended) sprite.contents()).sodium$setActive(true);
+        var contents = (SpriteContentsExtended) sprite.contents();
 
-        if(hasAnimation(sprite)) {
-            var context = GlobalChunkBuildContext.get();
+        // The active flag is only read for animated sprites. Skipping the write otherwise (and when already set)
+        // avoids dirtying a shared cache line from every thread for every vertex.
+        if (!contents.sodium$hasAnimation()) {
+            return;
+        }
 
-            if (context != null) {
-                context.captureAdditionalSprite(sprite);
-            }
+        if (!contents.sodium$isActive()) {
+            contents.sodium$setActive(true);
+        }
+
+        var context = GlobalChunkBuildContext.get();
+
+        if (context != null) {
+            context.captureAdditionalSprite(sprite);
         }
     }
 

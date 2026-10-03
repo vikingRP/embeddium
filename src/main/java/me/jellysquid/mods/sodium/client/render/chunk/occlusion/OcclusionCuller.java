@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.longs.Long2ReferenceMap;
 import me.jellysquid.mods.sodium.client.render.chunk.RenderSection;
 import me.jellysquid.mods.sodium.client.render.viewport.CameraTransform;
 import me.jellysquid.mods.sodium.client.render.viewport.Viewport;
+import me.jellysquid.mods.sodium.client.render.viewport.frustum.Frustum;
 import me.jellysquid.mods.sodium.client.util.collections.DoubleBufferedQueue;
 import me.jellysquid.mods.sodium.client.util.collections.ReadQueue;
 import me.jellysquid.mods.sodium.client.util.collections.WriteQueue;
@@ -190,6 +191,13 @@ public class OcclusionCuller {
     private static final float CHUNK_SECTION_SIZE = 8.0f /* chunk bounds */ + 1.0f /* maximum model extent */ + 0.125f /* epsilon */;
 
     public static boolean isWithinFrustum(Viewport viewport, RenderSection section) {
+        // VikingRP: classify the whole region once per viewport, sections only need their own test on its boundary
+        int regionIntersection = section.getRegion().getFrustumIntersection(viewport);
+
+        if (regionIntersection != Frustum.INTERSECT) {
+            return regionIntersection == Frustum.INSIDE;
+        }
+
         return viewport.isBoxVisible(section.getCenterX(), section.getCenterY(), section.getCenterZ(), CHUNK_SECTION_SIZE);
     }
 

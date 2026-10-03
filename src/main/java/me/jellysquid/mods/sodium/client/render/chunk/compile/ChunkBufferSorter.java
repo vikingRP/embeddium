@@ -1,12 +1,11 @@
 package me.jellysquid.mods.sodium.client.render.chunk.compile;
 
-import com.google.common.primitives.Floats;
-import it.unimi.dsi.fastutil.ints.IntArrays;
 import me.jellysquid.mods.sodium.client.util.NativeBuffer;
 import org.embeddedt.embeddium.render.chunk.sorting.TranslucentQuadAnalyzer;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
+import java.util.Arrays;
 import java.util.BitSet;
 
 public class ChunkBufferSorter {
@@ -42,14 +41,14 @@ public class ChunkBufferSorter {
         return indexBuffer;
     }
 
-    private static NativeBuffer generateIndexBuffer(NativeBuffer indexBuffer, int[] primitiveMapping) {
-        int bufferSize = getIndexBufferSize(primitiveMapping.length);
+    private static NativeBuffer generateIndexBuffer(NativeBuffer indexBuffer, int[] primitiveMapping, int primitiveCount) {
+        int bufferSize = getIndexBufferSize(primitiveCount);
         if(indexBuffer.getLength() != bufferSize) {
             throw new IllegalStateException("Given index buffer has length " + indexBuffer.getLength() + " but we expected " + bufferSize);
         }
         long ptr = MemoryUtil.memAddress(indexBuffer.getDirectBuffer());
 
-        for (int primitiveIndex = 0; primitiveIndex < primitiveMapping.length; primitiveIndex++) {
+        for (int primitiveIndex = 0; primitiveIndex < primitiveCount; primitiveIndex++) {
             int indexOffset = primitiveIndex * ELEMENTS_PER_PRIMITIVE;
 
             // Map to the desired primitive
@@ -103,12 +102,12 @@ public class ChunkBufferSorter {
 
         float[] centers = chunkData.centers();
         int quadCount = centers.length / 3;
-        int[] indicesArray = new int[quadCount];
-        float[] distanceArray = new float[quadCount];
+
+        SortScratch scratch = SCRATCH.get();
+        scratch.ensureCapacity(quadCount);
+
+        float[] distanceArray = scratch.distances;
         boolean isStatic = chunkData.level() == TranslucentQuadAnalyzer.Level.STATIC;
-        for (int quadIdx = 0; quadIdx < quadCount; ++quadIdx) {
-            indicesArray[quadIdx] = quadIdx;
-        }
 
         if (isStatic) {
             buildStaticDistanceArray(centers, distanceArray,
@@ -124,8 +123,84 @@ public class ChunkBufferSorter {
             buildDynamicDistanceArray(centers, distanceArray, quadCount, x, y, z);
         }
 
-        IntArrays.mergeSort(indicesArray, (a, b) -> Floats.compare(distanceArray[b], distanceArray[a]));
+        int[] indicesArray = sortByDescendingDistance(distanceArray, quadCount, scratch);
 
-        return generateIndexBuffer(indexBuffer, indicesArray);
+        return generateIndexBuffer(indexBuffer, indicesArray, quadCount);
+    }
+
+    /**
+     * VikingRP: stable LSD radix sort of the quad indices by descending distance, equivalent to the previous merge
+     * sort with {@code Float.compare(distance[b], distance[a])} but without comparator calls or allocations.
+     *
+     * @return the array holding the sorted indices in its first {@code count} entries
+     */
+    private static int[] sortByDescendingDistance(float[] distances, int count, SortScratch scratch) {
+        int[] keys = scratch.keys, keysAlt = scratch.keysAlt;
+        int[] indices = scratch.indices, indicesAlt = scratch.indicesAlt;
+        int[] counts = scratch.counts;
+
+        for (int i = 0; i < count; i++) {
+            // Map the float to an int whose unsigned order matches Float.compare, then invert it for a descending order
+            int bits = Float.floatToIntBits(distances[i]);
+            keys[i] = ~(bits ^ ((bits >> 31) | 0x80000000));
+            indices[i] = i;
+        }
+
+        for (int shift = 0; shift < 32; shift += 8) {
+            Arrays.fill(counts, 0);
+
+            for (int i = 0; i < count; i++) {
+                counts[(keys[i] >>> shift) & 0xFF]++;
+            }
+
+            // All keys share this digit: the pass would not change the order
+            if (counts[(keys[0] >>> shift) & 0xFF] == count) {
+                continue;
+            }
+
+            int sum = 0;
+
+            for (int bucket = 0; bucket < counts.length; bucket++) {
+                int c = counts[bucket];
+                counts[bucket] = sum;
+                sum += c;
+            }
+
+            for (int i = 0; i < count; i++) {
+                int key = keys[i];
+                int dst = counts[(key >>> shift) & 0xFF]++;
+
+                keysAlt[dst] = key;
+                indicesAlt[dst] = indices[i];
+            }
+
+            int[] swap = keys; keys = keysAlt; keysAlt = swap;
+            swap = indices; indices = indicesAlt; indicesAlt = swap;
+        }
+
+        return indices;
+    }
+
+    private static final ThreadLocal<SortScratch> SCRATCH = ThreadLocal.withInitial(SortScratch::new);
+
+    /** Per-thread working arrays, reused between sorts (sorting runs on the chunk builder threads). */
+    private static final class SortScratch {
+        final int[] counts = new int[256];
+
+        float[] distances = new float[0];
+        int[] keys = new int[0], keysAlt = new int[0];
+        int[] indices = new int[0], indicesAlt = new int[0];
+
+        void ensureCapacity(int count) {
+            if (this.keys.length < count) {
+                int capacity = Math.max(count, this.keys.length + (this.keys.length >> 1));
+
+                this.distances = new float[capacity];
+                this.keys = new int[capacity];
+                this.keysAlt = new int[capacity];
+                this.indices = new int[capacity];
+                this.indicesAlt = new int[capacity];
+            }
+        }
     }
 }

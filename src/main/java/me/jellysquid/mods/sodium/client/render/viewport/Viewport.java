@@ -62,6 +62,25 @@ public final class Viewport {
         );
     }
 
+    /**
+     * {@return the classification of the box against the frustum, see {@link Frustum#intersectAab}}
+     */
+    public int getBoxIntersection(int intOriginX, int intOriginY, int intOriginZ, float floatSizeX, float floatSizeY, float floatSizeZ) {
+        float floatOriginX = (intOriginX - this.transform.intX) - this.transform.fracX;
+        float floatOriginY = (intOriginY - this.transform.intY) - this.transform.fracY;
+        float floatOriginZ = (intOriginZ - this.transform.intZ) - this.transform.fracZ;
+
+        return this.frustum.intersectAab(
+                floatOriginX - floatSizeX,
+                floatOriginY - floatSizeY,
+                floatOriginZ - floatSizeZ,
+
+                floatOriginX + floatSizeX,
+                floatOriginY + floatSizeY,
+                floatOriginZ + floatSizeZ
+        );
+    }
+
     public CameraTransform getTransform() {
         return this.transform;
     }

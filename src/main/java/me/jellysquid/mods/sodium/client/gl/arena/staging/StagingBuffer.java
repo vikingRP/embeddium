@@ -13,4 +13,11 @@ public interface StagingBuffer {
     void delete(CommandList commandList);
 
     void flip();
+
+    /**
+     * {@return the number of bytes that can currently be enqueued without falling back to a slower upload path}
+     */
+    default long getAvailableBytes() {
+        return Long.MAX_VALUE;
+    }
 }

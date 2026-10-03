@@ -35,6 +35,7 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderBuffers;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
@@ -42,7 +43,9 @@ import net.minecraft.server.level.BlockDestructionProgress;
 import net.minecraft.util.Mth;
 import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.scores.Team;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.client.ForgeHooksClient;
@@ -448,7 +451,7 @@ public class SodiumWorldRenderer {
                 }
 
                 for (BlockEntity blockEntity : blockEntities) {
-                    if(ENABLE_BLOCKENTITY_CULLING && !currentViewport.isBoxVisible(blockEntity.getRenderBoundingBox()))
+                    if (!this.isBlockEntityVisible(blockEntityRenderer, blockEntity))
                         continue;
 
                     if (blockEntity.hasCustomOutlineRendering(this.client.player)) {
@@ -478,7 +481,7 @@ public class SodiumWorldRenderer {
             }
 
             for (var blockEntity : blockEntities) {
-                if(ENABLE_BLOCKENTITY_CULLING && !currentViewport.isBoxVisible(blockEntity.getRenderBoundingBox()))
+                if (!this.isBlockEntityVisible(blockEntityRenderer, blockEntity))
                     continue;
 
                 if (blockEntity.hasCustomOutlineRendering(this.client.player)) {
@@ -488,6 +491,24 @@ public class SodiumWorldRenderer {
                 renderBlockEntity(matrices, bufferBuilders, blockBreakingProgressions, tickDelta, immediate, x, y, z, blockEntityRenderer, blockEntity);
             }
         }
+    }
+
+    /**
+     * Rejects block entities that the dispatcher would skip anyway (no renderer, or beyond the renderer's view
+     * distance) before computing their render bounding box, which Forge does not cache and which allocates.
+     */
+    private boolean isBlockEntityVisible(BlockEntityRenderDispatcher dispatcher, BlockEntity blockEntity) {
+        if (!ENABLE_BLOCKENTITY_CULLING) {
+            return true;
+        }
+
+        BlockEntityRenderer<BlockEntity> renderer = dispatcher.getRenderer(blockEntity);
+
+        if (renderer == null || !renderer.shouldRender(blockEntity, dispatcher.camera.getPosition())) {
+            return false;
+        }
+
+        return this.currentViewport.isBoxVisible(blockEntity.getRenderBoundingBox());
     }
 
     private static void renderBlockEntity(PoseStack matrices,
@@ -565,7 +586,7 @@ public class SodiumWorldRenderer {
 
         // Ensure entities with nametags are visible, but only within nametag render range (players always return
         // true from shouldShowName, so without the range check they would never be culled)
-        if (entity.shouldShowName() && ForgeHooksClient.isNameplateInRenderDistance(entity, this.client.getEntityRenderDispatcher().distanceToSqr(entity))) {
+        if (entity.shouldShowName() && this.mayShowNameThroughBlocks(entity) && ForgeHooksClient.isNameplateInRenderDistance(entity, this.client.getEntityRenderDispatcher().distanceToSqr(entity))) {
             return true;
         }
 
@@ -581,6 +602,37 @@ public class SodiumWorldRenderer {
         double entityVolume = (box.maxX - box.minX) * (box.maxY - box.minY) * (box.maxZ - box.minZ);
         if (entityVolume > MAX_ENTITY_CHECK_VOLUME) {
             return this.isLargeBoxVisible(box);
+        }
+
+        return this.isBoxVisible(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+    }
+
+    /**
+     * Conservative subset of the vanilla nametag rules: returns false only when the entity's nametag is certainly not
+     * drawn through blocks, in which case an occluded entity can be culled like any other.
+     */
+    private boolean mayShowNameThroughBlocks(Entity entity) {
+        // Nametags hidden (F1), own nametag, or sneaking (the nametag is then occluded by blocks)
+        if (!Minecraft.renderNames() || entity == this.client.getCameraEntity() || entity.isDiscrete()) {
+            return false;
+        }
+
+        Team team = entity.getTeam();
+
+        if (team == null) {
+            return !(entity instanceof LivingEntity) || this.client.player == null || !entity.isInvisibleTo(this.client.player);
+        }
+
+        return team.getNameTagVisibility() != Team.Visibility.NEVER;
+    }
+
+    /**
+     * VikingRP: particles behind walls are culled through the visibility graph, like entities. Only called for
+     * particles already inside the frustum.
+     */
+    public boolean isParticleVisible(AABB box) {
+        if (!this.useEntityCulling) {
+            return true;
         }
 
         return this.isBoxVisible(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);

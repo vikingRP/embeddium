@@ -69,15 +69,22 @@ public class SpriteContentsMixin implements SpriteTransparencyLevelHolder {
         // Most textures (e.g. opaque block textures) have no fully transparent pixel at all. Detect this with a cheap
         // scan that stops at the first transparent pixel, and skip the expensive averaging pass otherwise.
         boolean hasTransparentPixel = false;
+        boolean hasTranslucentPixel = false;
 
         for (int pixelIndex = 0; pixelIndex < pixelCount; pixelIndex++) {
-            if (FastColor.ABGR32.alpha(MemoryUtil.memGetInt(ppPixel + (pixelIndex * 4L))) == 0) {
+            int alpha = FastColor.ABGR32.alpha(MemoryUtil.memGetInt(ppPixel + (pixelIndex * 4L)));
+
+            if (alpha == 0) {
                 hasTransparentPixel = true;
                 break;
+            } else if (alpha < 255) {
+                hasTranslucentPixel = true;
             }
         }
 
         if (!hasTransparentPixel) {
+            // The transparency level must still be known, the render pass optimization relies on it.
+            this.embeddium$transparencyLevel = hasTranslucentPixel ? SpriteTransparencyLevel.TRANSLUCENT : SpriteTransparencyLevel.OPAQUE;
             return;
         }
 
@@ -150,6 +157,8 @@ public class SpriteContentsMixin implements SpriteTransparencyLevelHolder {
 
     @Override
     public SpriteTransparencyLevel embeddium$getTransparencyLevel() {
-        return this.embeddium$transparencyLevel;
+        // Sprites built through other constructors are never scanned: assume the worst case for them.
+        SpriteTransparencyLevel level = this.embeddium$transparencyLevel;
+        return level != null ? level : SpriteTransparencyLevel.TRANSLUCENT;
     }
 }

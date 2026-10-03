@@ -51,6 +51,7 @@ public class MixinConfig {
         this.addMixinRule("features.render", true);
 
         this.addMixinRule("features.render.entity", true);
+        this.addMixinRule("features.render.block_entity", true);
         this.addMixinRule("features.render.entity.cull", true);
         this.addMixinRule("features.render.entity.fast_render", true);
         this.addMixinRule("features.render.entity.shadows", true);

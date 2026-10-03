@@ -33,6 +33,13 @@ public class BlockRendererRegistry {
     }
 
     /**
+     * {@return true if any render populator was registered, i.e. some blocks may use a custom renderer}
+     */
+    public boolean hasRenderPopulators() {
+        return !renderPopulators.isEmpty();
+    }
+
+    /**
      * Get a list of custom renderers for the given block & context.
      */
     public void fillCustomRenderers(List<Renderer> resultList, BlockRenderContext context) {

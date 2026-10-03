@@ -3,7 +3,6 @@ package me.jellysquid.mods.sodium.mixin.core.model.quad;
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.sugar.Local;
 import me.jellysquid.mods.sodium.client.model.quad.BakedQuadView;
-import me.jellysquid.mods.sodium.client.model.quad.properties.ModelQuadFlags;
 import me.jellysquid.mods.sodium.client.render.texture.SpriteUtil;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.block.model.BlockElementFace;
@@ -37,10 +36,9 @@ public class BakedQuadFactoryMixin {
 
             if (minUV >= 0 && maxUV <= 16) {
                 // Quad UVs do not extend outside texture boundary, we can trust the given sprite
-                BakedQuadView view = (BakedQuadView)quad;
-                // Recompute the geometry flags with the trusted bit set, so that IS_PASS_OPTIMIZABLE is derived
-                // even if the flags were already populated lazily (VikingRP: upstream fcd51372 never sets it here).
-                view.setFlags(ModelQuadFlags.getQuadFlags(view, quad.getDirection(), view.getFlags() | ModelQuadFlags.IS_TRUSTED_SPRITE));
+                // The geometry flags stay lazy: IS_PASS_OPTIMIZABLE is derived from the trusted bit on first use
+                // (VikingRP: upstream fcd51372 never sets it here).
+                ((BakedQuadView)quad).markTrustedSprite();
             }
 
         }

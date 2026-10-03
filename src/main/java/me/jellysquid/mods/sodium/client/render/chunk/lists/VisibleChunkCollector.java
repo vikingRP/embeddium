@@ -64,7 +64,22 @@ public class VisibleChunkCollector implements OcclusionCuller.Visitor {
     }
 
     public SortedRenderLists createRenderLists() {
-        return new SortedRenderLists(this.sortedRenderLists);
+        // Regions visited only through sections outside the frustum (or without geometry) have nothing to draw.
+        // Drop them, keeping the order of the others, so the render passes don't walk over them each frame.
+        var lists = this.sortedRenderLists;
+        int count = 0;
+
+        for (int i = 0; i < lists.size(); i++) {
+            var list = lists.get(i);
+
+            if (list.size() > 0) {
+                lists.set(count++, list);
+            }
+        }
+
+        lists.size(count);
+
+        return new SortedRenderLists(lists);
     }
 
     public Map<ChunkUpdateType, ArrayDeque<RenderSection>> getRebuildLists() {

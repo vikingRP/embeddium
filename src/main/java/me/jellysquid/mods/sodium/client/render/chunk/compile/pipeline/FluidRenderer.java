@@ -1,5 +1,6 @@
 package me.jellysquid.mods.sodium.client.render.chunk.compile.pipeline;
 
+import it.unimi.dsi.fastutil.objects.Object2ByteLinkedOpenHashMap;
 import me.jellysquid.mods.sodium.client.compat.ccl.SinkingVertexBuilder;
 import me.jellysquid.mods.sodium.client.model.light.LightMode;
 import me.jellysquid.mods.sodium.client.model.light.LightPipeline;
@@ -52,6 +53,7 @@ public class FluidRenderer {
     private static final float ALIGNED_EQUALS_EPSILON = 0.011f;
 
     private final BlockPos.MutableBlockPos scratchPos = new BlockPos.MutableBlockPos();
+    private final BlockPos.MutableBlockPos heightScratchPos = new BlockPos.MutableBlockPos();
     private final MutableFloat scratchHeight = new MutableFloat(0);
     private final MutableInt scratchSamples = new MutableInt();
 
@@ -122,12 +124,78 @@ public class FluidRenderer {
                 return true;
             }
 
-            VoxelShape threshold = Shapes.box(0.0D, 0.0D, 0.0D, 1.0D, height, 1.0D);
-
-            return !Shapes.blockOccudes(threshold, shape, dir);
+            return !this.isFluidFaceOccludedByShape(shape, dir, height);
         }
 
         return true;
+    }
+
+    private static final byte UNCACHED_OCCLUSION = (byte) 127;
+    private static final int MAX_CACHED_OCCLUSIONS = 256;
+
+    // VikingRP: results of Shapes.blockOccudes for partial shapes (slabs, stairs, ...) next to fluids. Block shapes are
+    // cached per block state, so they are compared by identity. Each chunk builder thread has its own FluidRenderer.
+    private final Object2ByteLinkedOpenHashMap<SideOcclusionKey> sideOcclusionCache = createSideOcclusionCache();
+    private final SideOcclusionKey sideOcclusionLookup = new SideOcclusionKey();
+
+    private static Object2ByteLinkedOpenHashMap<SideOcclusionKey> createSideOcclusionCache() {
+        var map = new Object2ByteLinkedOpenHashMap<SideOcclusionKey>(MAX_CACHED_OCCLUSIONS * 2, 0.5F);
+        map.defaultReturnValue(UNCACHED_OCCLUSION);
+        return map;
+    }
+
+    private boolean isFluidFaceOccludedByShape(VoxelShape shape, Direction dir, float height) {
+        SideOcclusionKey lookup = this.sideOcclusionLookup.set(shape, dir, height);
+        byte cached = this.sideOcclusionCache.getByte(lookup);
+
+        if (cached != UNCACHED_OCCLUSION) {
+            return cached == 1;
+        }
+
+        VoxelShape threshold = Shapes.box(0.0D, 0.0D, 0.0D, 1.0D, height, 1.0D);
+        boolean occluded = Shapes.blockOccudes(threshold, shape, dir);
+
+        this.sideOcclusionCache.put(lookup.copy(), (byte) (occluded ? 1 : 0));
+
+        if (this.sideOcclusionCache.size() > MAX_CACHED_OCCLUSIONS) {
+            this.sideOcclusionCache.removeFirstByte();
+        }
+
+        return occluded;
+    }
+
+    private static final class SideOcclusionKey {
+        private VoxelShape shape;
+        private Direction dir;
+        private int heightBits;
+        private int hash;
+
+        SideOcclusionKey set(VoxelShape shape, Direction dir, float height) {
+            this.shape = shape;
+            this.dir = dir;
+            this.heightBits = Float.floatToIntBits(height);
+            this.hash = (System.identityHashCode(shape) * 31 + dir.ordinal()) * 31 + this.heightBits;
+            return this;
+        }
+
+        SideOcclusionKey copy() {
+            SideOcclusionKey key = new SideOcclusionKey();
+            key.shape = this.shape;
+            key.dir = this.dir;
+            key.heightBits = this.heightBits;
+            key.hash = this.hash;
+            return key;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof SideOcclusionKey other && this.shape == other.shape && this.dir == other.dir && this.heightBits == other.heightBits;
+        }
+
+        @Override
+        public int hashCode() {
+            return this.hash;
+        }
     }
 
     private static boolean isAlignedEquals(float a, float b) {
@@ -541,7 +609,7 @@ public class FluidRenderer {
         FluidState fluidState = blockState.getFluidState();
 
         if (fluid.isSame(fluidState.getType())) {
-            FluidState fluidStateUp = world.getFluidState(blockPos.above());
+            FluidState fluidStateUp = world.getFluidState(this.heightScratchPos.setWithOffset(blockPos, Direction.UP));
 
             if (fluid.isSame(fluidStateUp.getType())) {
                 return 1.0f;

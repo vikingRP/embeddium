@@ -156,6 +156,11 @@ public class MappedStagingBuffer implements StagingBuffer {
         }
     }
 
+    @Override
+    public long getAvailableBytes() {
+        return this.remaining;
+    }
+
     private static final class CopyCommand {
         private final GlBuffer buffer;
         private final long readOffset;
