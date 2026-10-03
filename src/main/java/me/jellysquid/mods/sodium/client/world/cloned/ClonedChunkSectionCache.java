@@ -5,6 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -15,20 +16,33 @@ public class ClonedChunkSectionCache {
     private static final long MAX_CACHE_DURATION = TimeUnit.SECONDS.toNanos(5); /* number of nanoseconds */
 
     private final Level world;
+    private final LongSupplier clock;
 
     private final Long2ReferenceLinkedOpenHashMap<ClonedChunkSection> positionToEntry = new Long2ReferenceLinkedOpenHashMap<>();
 
     private long time; // updated once per frame to be the elapsed time since application start
 
     public ClonedChunkSectionCache(Level world) {
+        this(world, System::nanoTime);
+    }
+
+    ClonedChunkSectionCache(Level world, LongSupplier clock) {
         this.world = world;
-        this.time = getMonotonicTimeSource();
+        this.clock = clock;
+        this.time = clock.getAsLong();
     }
 
     public synchronized void cleanup() {
-        this.time = getMonotonicTimeSource();
-        this.positionToEntry.values()
-                .removeIf(entry -> this.time > (entry.getLastUsedTimestamp() + MAX_CACHE_DURATION));
+        this.time = this.clock.getAsLong();
+        // Acquires move entries to the tail and stamp them with this monotonic frame time. Expired entries
+        // therefore form a prefix; do not scan every live snapshot on every frame.
+        while (!this.positionToEntry.isEmpty()) {
+            var oldest = this.positionToEntry.get(this.positionToEntry.firstLongKey());
+            if (this.time - oldest.getLastUsedTimestamp() <= MAX_CACHE_DURATION) {
+                break;
+            }
+            this.positionToEntry.removeFirst();
+        }
     }
 
     @Nullable
@@ -70,10 +84,5 @@ public class ClonedChunkSectionCache {
 
     public synchronized void invalidate(int x, int y, int z) {
         this.positionToEntry.remove(SectionPos.asLong(x, y, z));
-    }
-
-    private static long getMonotonicTimeSource() {
-        // Should be monotonic in JDK 17 on sane platforms...
-        return System.nanoTime();
     }
 }

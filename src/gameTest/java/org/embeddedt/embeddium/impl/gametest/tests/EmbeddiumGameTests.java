@@ -1,6 +1,7 @@
 package org.embeddedt.embeddium.impl.gametest.tests;
 
 import me.jellysquid.mods.sodium.client.render.chunk.compile.pipeline.BlockOcclusionCache;
+import me.jellysquid.mods.sodium.client.world.cloned.ChunkPreparationChecks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -13,6 +14,36 @@ import org.embeddedt.embeddium.impl.gametest.content.client.InstrumentingModelWr
 import org.embeddedt.embeddium.impl.gametest.util.TestUtils;
 
 public class EmbeddiumGameTests {
+    @GameTest(timeoutTicks = 400)
+    public static void testChunkSnapshotReuse(GameTestHelper helper) {
+        Minecraft.getInstance().submit(ChunkPreparationChecks::checkSnapshotReuse).join();
+        helper.succeed();
+    }
+
+    @GameTest(timeoutTicks = 400)
+    public static void testChunkCacheExpiry(GameTestHelper helper) {
+        Minecraft.getInstance().submit(ChunkPreparationChecks::checkCacheExpiry).join();
+        helper.succeed();
+    }
+
+    @GameTest(timeoutTicks = 400)
+    public static void testChunkResultPublication(GameTestHelper helper) {
+        ChunkCompletionChecks.checkPublication();
+        helper.succeed();
+    }
+
+    @GameTest(timeoutTicks = 400)
+    public static void testTranslucentSorting(GameTestHelper helper) {
+        RenderRegressionChecks.checkSorting();
+        helper.succeed();
+    }
+
+    @GameTest(timeoutTicks = 400)
+    public static void testMappedStagingBuffer(GameTestHelper helper) {
+        Minecraft.getInstance().submit(RenderRegressionChecks::checkStagingBuffer).join();
+        helper.succeed();
+    }
+
     /**
      * Test that the hidesNeighborFace Forge extension is used correctly.
      */

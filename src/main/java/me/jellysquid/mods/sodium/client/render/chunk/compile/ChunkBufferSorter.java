@@ -139,6 +139,20 @@ public class ChunkBufferSorter {
         int[] indices = scratch.indices, indicesAlt = scratch.indicesAlt;
         int[] counts = scratch.counts;
 
+        // Small meshes do not amortize clearing and scanning the 256 radix buckets four times.
+        // Strict comparison preserves the original order of equal distances, including NaNs.
+        if (count <= 16) {
+            for (int i = 0; i < count; i++) {
+                int j = i;
+                while (j > 0 && Float.compare(distances[i], distances[indices[j - 1]]) > 0) {
+                    indices[j] = indices[j - 1];
+                    j--;
+                }
+                indices[j] = i;
+            }
+            return indices;
+        }
+
         for (int i = 0; i < count; i++) {
             // Map the float to an int whose unsigned order matches Float.compare, then invert it for a descending order
             int bits = Float.floatToIntBits(distances[i]);

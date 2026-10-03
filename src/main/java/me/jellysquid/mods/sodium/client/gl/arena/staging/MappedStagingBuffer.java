@@ -11,8 +11,6 @@ import me.jellysquid.mods.sodium.client.gl.util.EnumBitField;
 import me.jellysquid.mods.sodium.client.util.MathUtil;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 
 public class MappedStagingBuffer implements StagingBuffer {
     private static final EnumBitField<GlBufferStorageFlags> STORAGE_FLAGS =
@@ -32,6 +30,7 @@ public class MappedStagingBuffer implements StagingBuffer {
 
     private final int capacity;
     private int remaining;
+    private int pendingBytes;
 
     public MappedStagingBuffer(CommandList commandList) {
         this(commandList, 1024 * 1024 * 16 /* 16 MB */);
@@ -55,6 +54,10 @@ public class MappedStagingBuffer implements StagingBuffer {
     public void enqueueCopy(CommandList commandList, ByteBuffer data, GlBuffer dst, long writeOffset) {
         int length = data.remaining();
 
+        if (length == 0) {
+            return;
+        }
+
         if (length > this.remaining) {
             this.fallbackStagingBuffer.enqueueCopy(commandList, data, dst, writeOffset);
 
@@ -67,8 +70,10 @@ public class MappedStagingBuffer implements StagingBuffer {
         if (length > remaining) {
             int split = length - remaining;
 
-            this.addTransfer(data.slice(0, remaining), dst, this.pos, writeOffset);
-            this.addTransfer(data.slice(remaining, split), dst, 0, writeOffset + remaining);
+            if (remaining > 0) {
+                this.addTransfer(data.slice(data.position(), remaining), dst, this.pos, writeOffset);
+            }
+            this.addTransfer(data.slice(data.position() + remaining, split), dst, 0, writeOffset + remaining);
 
             this.pos = split;
         } else {
@@ -77,6 +82,7 @@ public class MappedStagingBuffer implements StagingBuffer {
         }
 
         this.remaining -= length;
+        this.pendingBytes += length;
     }
 
     private void addTransfer(ByteBuffer data, GlBuffer dst, long readOffset, long writeOffset) {
@@ -90,46 +96,40 @@ public class MappedStagingBuffer implements StagingBuffer {
             return;
         }
 
-        if (this.pos < this.start) {
-            commandList.flushMappedRange(this.mappedBuffer.map, this.start, this.capacity - this.start);
-            commandList.flushMappedRange(this.mappedBuffer.map, 0, this.pos);
-        } else {
-            commandList.flushMappedRange(this.mappedBuffer.map, this.start, this.pos - this.start);
+        // Track bytes explicitly: after a full lap pos == start still means the entire ring is dirty.
+        int tailBytes = Math.min(this.pendingBytes, this.capacity - this.start);
+        if (tailBytes > 0) {
+            commandList.flushMappedRange(this.mappedBuffer.map, this.start, tailBytes);
+        }
+        if (this.pendingBytes > tailBytes) {
+            commandList.flushMappedRange(this.mappedBuffer.map, 0, this.pendingBytes - tailBytes);
         }
 
-        int bytes = 0;
-
-        for (CopyCommand command : consolidateCopies(this.pendingCopies)) {
-            bytes += command.bytes;
-
-            commandList.copyBufferSubData(this.mappedBuffer.buffer, command.buffer, command.readOffset, command.writeOffset, command.bytes);
-        }
-
-        this.fencedRegions.enqueue(new FencedMemoryRegion(commandList.createFence(), bytes));
+        this.flushCopies(commandList);
+        this.fencedRegions.enqueue(new FencedMemoryRegion(commandList.createFence(), this.pendingBytes));
 
         this.start = this.pos;
+        this.pendingBytes = 0;
     }
 
-    private static List<CopyCommand> consolidateCopies(PriorityQueue<CopyCommand> queue) {
-        List<CopyCommand> merged = new ArrayList<>();
-        CopyCommand last = null;
+    private void flushCopies(CommandList commandList) {
+        CopyCommand last = this.pendingCopies.dequeue();
 
-        while (!queue.isEmpty()) {
-            CopyCommand command = queue.dequeue();
+        while (!this.pendingCopies.isEmpty()) {
+            CopyCommand command = this.pendingCopies.dequeue();
 
-            if (last != null) {
-                if (last.buffer == command.buffer &&
-                        last.writeOffset + last.bytes == command.writeOffset &&
-                        last.readOffset + last.bytes == command.readOffset) {
-                    last.bytes += command.bytes;
-                    continue;
-                }
+            if (last.buffer == command.buffer &&
+                    last.writeOffset + last.bytes == command.writeOffset &&
+                    last.readOffset + last.bytes == command.readOffset) {
+                last.bytes += command.bytes;
+                continue;
             }
 
-            merged.add(last = new CopyCommand(command));
+            commandList.copyBufferSubData(this.mappedBuffer.buffer, last.buffer, last.readOffset, last.writeOffset, last.bytes);
+            last = command;
         }
 
-        return merged;
+        commandList.copyBufferSubData(this.mappedBuffer.buffer, last.buffer, last.readOffset, last.writeOffset, last.bytes);
     }
 
     @Override
@@ -137,6 +137,9 @@ public class MappedStagingBuffer implements StagingBuffer {
         this.mappedBuffer.delete(commandList);
         this.fallbackStagingBuffer.delete(commandList);
         this.pendingCopies.clear();
+        while (!this.fencedRegions.isEmpty()) {
+            this.fencedRegions.dequeue().fence().delete();
+        }
     }
 
     @Override
@@ -173,13 +176,6 @@ public class MappedStagingBuffer implements StagingBuffer {
             this.readOffset = readOffset;
             this.writeOffset = writeOffset;
             this.bytes = bytes;
-        }
-
-        public CopyCommand(CopyCommand command) {
-            this.buffer = command.buffer;
-            this.writeOffset = command.writeOffset;
-            this.readOffset = command.readOffset;
-            this.bytes = command.bytes;
         }
     }
 

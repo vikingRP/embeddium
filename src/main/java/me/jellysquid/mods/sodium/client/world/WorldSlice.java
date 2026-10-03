@@ -89,6 +89,12 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
     // (Local Section -> Block States) table.
     private final BlockState[][] blockArrays;
 
+    // Tracks whether a reusable array may contain non-air data from a previous build.
+    private final boolean[] blockArrayHasData = new boolean[SECTION_ARRAY_SIZE];
+
+    // Most stone/building meshes never request biome colors. Keep the snapshot until the first such request.
+    private @Nullable ChunkRenderContext pendingBiomeContext;
+
     // (Local Section -> Light Arrays) table.
     private final @Nullable DataLayer[][] lightArrays;
 
@@ -180,8 +186,16 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
             }
         }
 
-        this.biomeSlice.update(this.world, context);
-        this.biomeColors.update(context);
+        this.pendingBiomeContext = context;
+    }
+
+    private void ensureBiomeData() {
+        ChunkRenderContext context = this.pendingBiomeContext;
+        if (context != null) {
+            this.biomeSlice.update(this.world, context);
+            this.biomeColors.update(context);
+            this.pendingBiomeContext = null;
+        }
     }
 
     private void copySectionData(ChunkRenderContext context, int sectionIndex) {
@@ -190,7 +204,14 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
         Objects.requireNonNull(section, "Chunk section must be non-null");
 
         try {
-            this.unpackBlockData(this.blockArrays[sectionIndex], context, section);
+            if (section.getBlockData() != null) {
+                // Mark dirty before unpacking, including when a modded palette throws partway through a copy.
+                this.blockArrayHasData[sectionIndex] = true;
+                this.unpackBlockData(this.blockArrays[sectionIndex], context, section);
+            } else if (this.blockArrayHasData[sectionIndex]) {
+                Arrays.fill(this.blockArrays[sectionIndex], EMPTY_BLOCK_STATE);
+                this.blockArrayHasData[sectionIndex] = false;
+            }
         } catch(RuntimeException e) {
             throw new IllegalStateException("Exception copying block data for section: " + section.getPosition(), e);
         }
@@ -203,11 +224,6 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
     }
 
     private void unpackBlockData(BlockState[] blockArray, ChunkRenderContext context, ClonedChunkSection section) {
-        if (section.getBlockData() == null) {
-            Arrays.fill(blockArray, EMPTY_BLOCK_STATE);
-            return;
-        }
-
         var container = ReadableContainerExtended.of(section.getBlockData());
 
         SectionPos origin = context.getOrigin();
@@ -233,6 +249,7 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
     }
 
     public void reset() {
+        this.pendingBiomeContext = null;
         // erase any pointers to resources we no longer need
         // no point in cleaning the pre-allocated arrays (such as block state storage) since we hold the
         // only reference.
@@ -354,6 +371,7 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
 
     @Override
     public int getBlockTint(BlockPos pos, ColorResolver resolver) {
+        this.ensureBiomeData();
         return this.biomeColors.getColor(resolver, pos.getX(), pos.getY(), pos.getZ());
     }
 
@@ -369,6 +387,7 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
 
     @Override
     public int getColor(BiomeColorSource source, int x, int y, int z) {
+        this.ensureBiomeData();
         return this.biomeColors.getColor(source, x, y, z);
     }
 
@@ -379,6 +398,7 @@ public class WorldSlice implements BlockAndTintGetter, BiomeColorView, FabricBlo
 
     @Override
     public Holder<Biome> getBiomeFabric(BlockPos pos) {
+        this.ensureBiomeData();
         return this.biomeSlice.getBiome(pos.getX(), pos.getY(), pos.getZ());
     }
 

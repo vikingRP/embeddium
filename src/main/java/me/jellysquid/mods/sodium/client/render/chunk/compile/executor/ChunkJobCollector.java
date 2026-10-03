@@ -20,8 +20,12 @@ public class ChunkJobCollector {
     }
 
     public void onJobFinished(ChunkJobResult<ChunkBuildOutput> result) {
-        this.semaphore.release(1);
-        this.collector.accept(result);
+        try {
+            this.collector.accept(result);
+        } finally {
+            // Publish before waking the render thread, so urgent builds can be uploaded this frame.
+            this.semaphore.release(1);
+        }
     }
 
     public void awaitCompletion(ChunkBuilder builder) {
