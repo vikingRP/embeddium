@@ -183,6 +183,12 @@ public class RenderSectionManager {
                     continue;
                 }
 
+                if (section.getSquaredDistance((float) cameraPosition.x, (float) cameraPosition.y, (float) cameraPosition.z) > this.translucencyBlockRenderDistance) {
+                    // Too far away for sorting errors to be noticeable; the section will be resorted once the camera
+                    // gets close enough (its last sort position is left untouched, so the camera delta check passes)
+                    continue;
+                }
+
                 ChunkUpdateType update = ChunkUpdateType.getPromotionUpdateType(section.getPendingUpdate(), (allowImportant && this.shouldPrioritizeRebuild(section)) ? ChunkUpdateType.IMPORTANT_SORT : ChunkUpdateType.SORT);
 
                 if (update == null) {

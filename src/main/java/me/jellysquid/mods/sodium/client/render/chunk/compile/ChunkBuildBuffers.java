@@ -37,7 +37,7 @@ public class ChunkBuildBuffers {
             var vertexBuffers = new ChunkMeshBufferBuilder[ModelQuadFacing.COUNT];
 
             for (int facing = 0; facing < ModelQuadFacing.COUNT; facing++) {
-                vertexBuffers[facing] = new ChunkMeshBufferBuilder(this.vertexType, 128 * 1024, pass.isSorted() && facing == ModelQuadFacing.UNASSIGNED.ordinal());
+                vertexBuffers[facing] = new ChunkMeshBufferBuilder(this.vertexType, 16 * 1024, pass.isSorted() && facing == ModelQuadFacing.UNASSIGNED.ordinal());
             }
 
             this.builders.put(pass, new BakedChunkModelBuilder(vertexBuffers, !pass.isSorted()));

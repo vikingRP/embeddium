@@ -45,6 +45,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.client.ForgeHooksClient;
 import net.minecraftforge.fml.loading.FMLLoader;
 
 import java.util.*;
@@ -557,8 +558,14 @@ public class SodiumWorldRenderer {
             return true;
         }
 
-        // Ensure entities with outlines or nametags are always visible
-        if (this.client.shouldEntityAppearGlowing(entity) || entity.shouldShowName()) {
+        // Ensure entities with outlines are always visible
+        if (this.client.shouldEntityAppearGlowing(entity)) {
+            return true;
+        }
+
+        // Ensure entities with nametags are visible, but only within nametag render range (players always return
+        // true from shouldShowName, so without the range check they would never be culled)
+        if (entity.shouldShowName() && ForgeHooksClient.isNameplateInRenderDistance(entity, this.client.getEntityRenderDispatcher().distanceToSqr(entity))) {
             return true;
         }
 
@@ -569,14 +576,52 @@ public class SodiumWorldRenderer {
             return true;
         }
 
-        // bail on very large entities to avoid checking many sections
+        // avoid checking many sections for very large entities: only sample the sections around the corners and the
+        // center of the box
         double entityVolume = (box.maxX - box.minX) * (box.maxY - box.minY) * (box.maxZ - box.minZ);
         if (entityVolume > MAX_ENTITY_CHECK_VOLUME) {
-            // TODO: do a frustum check instead, even large entities aren't visible if they're outside the frustum
-            return true;
+            return this.isLargeBoxVisible(box);
         }
 
         return this.isBoxVisible(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+    }
+
+    /** Upper bound of sections sampled for one large entity; beyond it the entity is assumed visible, as before. */
+    private static final int MAX_LARGE_ENTITY_SAMPLES = 256;
+
+    private boolean isLargeBoxVisible(AABB box) {
+        // The camera may be inside the box without being near any visible sample
+        if (box.contains(this.lastCameraX, this.lastCameraY, this.lastCameraZ)) {
+            return true;
+        }
+
+        // Sample one point per section covered by the box (plus the max edge) so that any visible section the box
+        // overlaps is found; corners alone would miss a long entity whose middle is the only visible part.
+        int stepsX = (int) Math.ceil((box.maxX - box.minX) / 16.0D) + 1;
+        int stepsY = (int) Math.ceil((box.maxY - box.minY) / 16.0D) + 1;
+        int stepsZ = (int) Math.ceil((box.maxZ - box.minZ) / 16.0D) + 1;
+
+        if ((long) stepsX * stepsY * stepsZ > MAX_LARGE_ENTITY_SAMPLES) {
+            return true;
+        }
+
+        for (int ix = 0; ix < stepsX; ix++) {
+            double x = Math.min(box.minX + ix * 16.0D, box.maxX);
+
+            for (int iy = 0; iy < stepsY; iy++) {
+                double y = Math.min(box.minY + iy * 16.0D, box.maxY);
+
+                for (int iz = 0; iz < stepsZ; iz++) {
+                    double z = Math.min(box.minZ + iz * 16.0D, box.maxZ);
+
+                    if (this.isBoxVisible(x, y, z, x, y, z)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     public boolean isBoxVisible(double x1, double y1, double z1, double x2, double y2, double z2) {

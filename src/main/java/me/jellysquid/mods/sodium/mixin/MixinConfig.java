@@ -53,7 +53,7 @@ public class MixinConfig {
         this.addMixinRule("features.render.entity", true);
         this.addMixinRule("features.render.entity.cull", true);
         this.addMixinRule("features.render.entity.fast_render", true);
-        this.addMixinRule("features.render.entity.shadow", true);
+        this.addMixinRule("features.render.entity.shadows", true);
 
         this.addMixinRule("features.render.gui", true);
         this.addMixinRule("features.render.gui.debug", true);
@@ -84,7 +84,6 @@ public class MixinConfig {
 
         this.addMixinRule("features.world", true);
         this.addMixinRule("features.world.biome", true);
-        this.addMixinRule("features.world.storage", true);
 
         this.addMixinRule("workarounds", true);
         this.addMixinRule("workarounds.context_creation", true);

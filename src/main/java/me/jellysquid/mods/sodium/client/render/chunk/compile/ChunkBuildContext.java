@@ -21,11 +21,24 @@ public class ChunkBuildContext {
         this.additionalCapturedSprites = new ObjectOpenHashSet<>();
     }
 
+    /**
+     * Resets per-job state after a build. The native scratch buffers are intentionally kept alive so that the next
+     * build on this context does not have to reallocate them; finished meshes are always copied out of them (see
+     * {@link ChunkBuildBuffers#createMesh}). Call {@link #destroy()} to release them.
+     */
     public void cleanup() {
-        this.buffers.destroy();
         this.cache.cleanup();
         this.additionalCapturedSprites.clear();
         this.captureAdditionalSprites = false;
+    }
+
+    /**
+     * Releases all resources (including native scratch buffers) held by this context. Must only be called from the
+     * thread owning the context, once it will no longer be used.
+     */
+    public void destroy() {
+        this.cleanup();
+        this.buffers.destroy();
     }
 
     public void setCaptureAdditionalSprites(boolean flag) {

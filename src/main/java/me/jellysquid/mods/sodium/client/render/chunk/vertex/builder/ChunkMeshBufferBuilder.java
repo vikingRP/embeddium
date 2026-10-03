@@ -12,6 +12,14 @@ public class ChunkMeshBufferBuilder {
     private final ChunkVertexEncoder encoder;
     private final int stride;
 
+    /**
+     * If a buffer grew beyond this many multiples of the initial capacity while building a large section, it is
+     * shrunk back to the initial capacity at the start of the next build so that one huge section does not pin a
+     * large amount of native memory per worker forever.
+     */
+    private static final int SHRINK_THRESHOLD_MULTIPLIER = 4;
+
+    // All capacities are expressed in vertices, not bytes
     private final int initialCapacity;
     private final TranslucentQuadAnalyzer analyzer;
 
@@ -26,7 +34,7 @@ public class ChunkMeshBufferBuilder {
 
         this.buffer = null;
 
-        this.capacity = initialCapacity;
+        this.capacity = 0;
         this.initialCapacity = initialCapacity;
 
         this.analyzer = collectSortState ? new TranslucentQuadAnalyzer() : null;
@@ -37,7 +45,7 @@ public class ChunkMeshBufferBuilder {
         var vertexCount = vertices.length;
 
         if (this.count + vertexCount >= this.capacity) {
-            this.grow(this.stride * vertexCount);
+            this.grow(vertexCount);
         }
 
         long ptr = MemoryUtil.memAddress(this.buffer, this.count * this.stride);
@@ -56,11 +64,14 @@ public class ChunkMeshBufferBuilder {
     }
 
     private void grow(int len) {
-        // The new capacity will at least as large as the write it needs to service
+        // The new capacity will at least as large as the write it needs to service (len is in vertices)
         int cap = Math.max(this.capacity * 2, this.capacity + len);
+        // Allocate at least the initial capacity on first use
+        cap = Math.max(cap, this.initialCapacity);
 
-        // Update the buffer and capacity now
-        this.setBufferSize(cap * this.stride);
+        // Update the buffer and capacity now (setBufferSize takes a vertex count and applies the stride itself;
+        // multiplying by the stride here as well used to over-allocate by a factor of stride)
+        this.setBufferSize(cap);
     }
 
     private void setBufferSize(int capacity) {
@@ -75,7 +86,11 @@ public class ChunkMeshBufferBuilder {
             this.analyzer.clear();
         }
 
-        this.setBufferSize(this.initialCapacity);
+        // Keep the native buffer alive between builds; only give memory back if a previous large section made it
+        // grow far beyond the initial capacity. The buffer is allocated lazily on the first push.
+        if (this.buffer != null && this.capacity > this.initialCapacity * SHRINK_THRESHOLD_MULTIPLIER) {
+            this.setBufferSize(this.initialCapacity);
+        }
     }
 
     @Nullable
@@ -89,6 +104,7 @@ public class ChunkMeshBufferBuilder {
         }
 
         this.buffer = null;
+        this.capacity = 0;
     }
 
     public boolean isEmpty() {

@@ -13,6 +13,7 @@ import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class NativeBuffer {
@@ -22,14 +23,17 @@ public class NativeBuffer {
     private static final Reference2ReferenceMap<Reference<NativeBuffer>, BufferReference> ACTIVE_BUFFERS =
             Reference2ReferenceMaps.synchronize(new Reference2ReferenceOpenHashMap<>());
 
-    private static long ALLOCATED = 0L;
+    // Buffers are allocated on chunk builder threads and freed on the main thread
+    private static final AtomicLong ALLOCATED = new AtomicLong();
 
     private final BufferReference ref;
+    private final PhantomReference<NativeBuffer> phantomRef;
 
     public NativeBuffer(int capacity) {
         this.ref = allocate(capacity);
+        this.phantomRef = new PhantomReference<>(this, RECLAIM_QUEUE);
 
-        ACTIVE_BUFFERS.put(new PhantomReference<>(this, RECLAIM_QUEUE), this.ref);
+        ACTIVE_BUFFERS.put(this.phantomRef, this.ref);
     }
 
     public static NativeBuffer copy(ByteBuffer src) {
@@ -46,6 +50,11 @@ public class NativeBuffer {
 
     public void free() {
         deallocate(this.ref);
+
+        // The buffer was released explicitly, so it no longer needs to be tracked for leak reclamation. Once the
+        // phantom reference is unreachable it will never be enqueued.
+        ACTIVE_BUFFERS.remove(this.phantomRef);
+        this.phantomRef.clear();
     }
 
     public int getLength() {
@@ -62,7 +71,7 @@ public class NativeBuffer {
         while ((ref = RECLAIM_QUEUE.poll()) != null) {
             BufferReference buf = ACTIVE_BUFFERS.remove(ref);
 
-            if (buf.freed) {
+            if (buf == null || buf.freed) {
                 continue;
             }
 
@@ -82,7 +91,7 @@ public class NativeBuffer {
     }
 
     public static long getTotalAllocated() {
-        return ALLOCATED;
+        return ALLOCATED.get();
     }
 
     private static StackTraceElement[] getStackTrace() {
@@ -117,7 +126,7 @@ public class NativeBuffer {
         StackTraceElement[] stackTrace = getStackTrace();
 
         BufferReference ref = new BufferReference(address, bytes, stackTrace);
-        ALLOCATED += ref.length;
+        ALLOCATED.addAndGet(ref.length);
 
         return ref;
     }
@@ -128,7 +137,7 @@ public class NativeBuffer {
 
         MemoryUtil.nmemFree(ref.address);
 
-        ALLOCATED -= ref.length;
+        ALLOCATED.addAndGet(-ref.length);
     }
 
     private static class BufferReference {

@@ -31,9 +31,11 @@ public class ChunkBuilder {
      * The number of tasks to allow in the queue per available worker thread. This value should be kept conservative
      * to avoid the threads becoming backlogged and failing to keep up with changes in chunk visibility (e.g.
      * camera movement). However, it also needs to be large enough that the thread is not spending part of the
-     * frame doing nothing. 2 seems to be a decent value, and is what Sodium 0.2 used.
+     * frame doing nothing. Sodium 0.2 used 2, but jobs are only scheduled once per frame: at low frame rates or with
+     * few workers, a worker would finish its 2 jobs early and idle for the rest of the frame. 4 keeps the workers fed
+     * while staying small enough that stale jobs remain rare (superseded jobs are still cancelled as before).
      */
-    private static final int TASK_QUEUE_LIMIT_PER_WORKER = 2;
+    private static final int TASK_QUEUE_LIMIT_PER_WORKER = 4;
 
     private final ChunkJobQueue queue = new ChunkJobQueue();
 
@@ -94,6 +96,9 @@ public class ChunkBuilder {
         }
 
         this.shutdownThreads();
+
+        // Worker contexts are destroyed by their own threads on exit, the local one is owned by this thread
+        this.localContext.destroy();
     }
 
     private void shutdownThreads() {
@@ -130,7 +135,10 @@ public class ChunkBuilder {
      * thread.
      */
     private static int getOptimalThreadCount() {
-        return Mth.clamp(Math.max(getMaxThreadCount() / 3, getMaxThreadCount() - 6), 1, 10);
+        int maxThreads = getMaxThreadCount();
+        // On 4+ thread CPUs, never fall back to a single builder thread (the old formula gave 1 thread on 4 threads)
+        int minThreads = Math.min(Runtime.getRuntime().availableProcessors() >= 4 ? 2 : 1, maxThreads);
+        return Mth.clamp(Math.max(maxThreads / 3, maxThreads - 6), minThreads, 10);
     }
 
     private static int getThreadCount() {
@@ -205,30 +213,35 @@ public class ChunkBuilder {
 
         @Override
         public void run() {
-            // Run until the chunk builder shuts down
-            while (ChunkBuilder.this.queue.isRunning()) {
-                ChunkJob job;
+            try {
+                // Run until the chunk builder shuts down
+                while (ChunkBuilder.this.queue.isRunning()) {
+                    ChunkJob job;
 
-                try {
-                    job = ChunkBuilder.this.queue.waitForNextJob();
-                } catch (InterruptedException ignored) {
-                    continue;
+                    try {
+                        job = ChunkBuilder.this.queue.waitForNextJob();
+                    } catch (InterruptedException ignored) {
+                        continue;
+                    }
+
+                    if (job == null) {
+                        // might mean we are not running anymore... go around and check isRunning
+                        continue;
+                    }
+
+                    ChunkBuilder.this.busyThreadCount.getAndIncrement();
+
+                    try {
+                        job.execute(this.context);
+                    } finally {
+                        this.context.cleanup();
+
+                        ChunkBuilder.this.busyThreadCount.decrementAndGet();
+                    }
                 }
-
-                if (job == null) {
-                    // might mean we are not running anymore... go around and check isRunning
-                    continue;
-                }
-
-                ChunkBuilder.this.busyThreadCount.getAndIncrement();
-
-                try {
-                    job.execute(this.context);
-                } finally {
-                    this.context.cleanup();
-
-                    ChunkBuilder.this.busyThreadCount.decrementAndGet();
-                }
+            } finally {
+                // Scratch buffers are kept alive between jobs, release them once this worker stops
+                this.context.destroy();
             }
         }
     }

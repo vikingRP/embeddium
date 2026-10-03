@@ -74,13 +74,31 @@ public class MultipartBakedModelMixin {
 
     @Unique
     private BakedModel[] getModelComponents(BlockState state) {
-        BakedModel[] models;
+        BakedModel[] models = null;
 
-        long readStamp = this.lock.readLock();
-        try {
-            models = this.stateCacheFast.get(state);
-        } finally {
-            this.lock.unlockRead(readStamp);
+        // Fast path: optimistic read without taking the lock. The map is only ever added to, so a concurrent write
+        // can at worst make this read return garbage or throw (e.g. during a rehash); validate() detects both cases.
+        long stamp = this.lock.tryOptimisticRead();
+        if (stamp != 0L) {
+            try {
+                models = this.stateCacheFast.get(state);
+            } catch (RuntimeException e) {
+                models = null;
+            }
+            if (!this.lock.validate(stamp)) {
+                models = null;
+                stamp = 0L;
+            }
+        }
+
+        if (stamp == 0L) {
+            // Slow path: a write happened concurrently, retry under a read lock
+            long readStamp = this.lock.readLock();
+            try {
+                models = this.stateCacheFast.get(state);
+            } finally {
+                this.lock.unlockRead(readStamp);
+            }
         }
 
         if (models == null) {
@@ -117,6 +135,8 @@ public class MultipartBakedModelMixin {
         BakedModel[] models = getModelComponents(state);
 
         List<BakedQuad> quads = null;
+        // The only non-empty submodel list seen so far, returned as-is if no other submodel contributes quads
+        List<BakedQuad> singleQuads = null;
         long seed = random.nextLong();
 
         boolean checkSubmodelTypes = this.embeddium$hasCustomRenderTypes;
@@ -131,17 +151,29 @@ public class MultipartBakedModelMixin {
                 if(models.length == 1) {
                     // Nobody else will return quads, so no need to make a wrapper list
                     return submodelQuads;
+                } else if (submodelQuads.isEmpty()) {
+                    // Nothing to merge (common for culled faces)
+                    continue;
+                } else if (quads == null && singleQuads == null) {
+                    // Defer allocating a merged list until a second submodel contributes quads
+                    singleQuads = submodelQuads;
                 } else {
-                    // Allocate a list to merge all the inner lists together
+                    // Allocate a fresh list to merge all the inner lists together (never reused, callers may keep it)
                     if(quads == null) {
-                        quads = new ArrayList<>();
+                        quads = new ArrayList<>(singleQuads.size() + submodelQuads.size());
+                        quads.addAll(singleQuads);
+                        singleQuads = null;
                     }
                     quads.addAll(submodelQuads);
                 }
             }
         }
 
-        return quads != null ? quads : Collections.emptyList();
+        if (quads != null) {
+            return quads;
+        }
+
+        return singleQuads != null ? singleQuads : Collections.emptyList();
     }
 
     /**

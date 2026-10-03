@@ -63,6 +63,21 @@ public class SpriteContentsMixin {
         final long ppPixel = NativeImageHelper.getPointerRGBA(nativeImage);
         final int pixelCount = nativeImage.getHeight() * nativeImage.getWidth();
 
+        // Most textures (e.g. opaque block textures) have no fully transparent pixel at all. Detect this with a cheap
+        // scan that stops at the first transparent pixel, and skip the expensive averaging pass otherwise.
+        boolean hasTransparentPixel = false;
+
+        for (int pixelIndex = 0; pixelIndex < pixelCount; pixelIndex++) {
+            if (FastColor.ABGR32.alpha(MemoryUtil.memGetInt(ppPixel + (pixelIndex * 4L))) == 0) {
+                hasTransparentPixel = true;
+                break;
+            }
+        }
+
+        if (!hasTransparentPixel) {
+            return;
+        }
+
         // Calculate an average color from all pixels that are not completely transparent.
         // This average is weighted based on the (non-zero) alpha value of the pixel.
         float r = 0.0f;
