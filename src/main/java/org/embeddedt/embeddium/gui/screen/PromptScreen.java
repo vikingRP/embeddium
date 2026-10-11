@@ -39,7 +39,7 @@ public class PromptScreen extends Screen {
         int boxX = (prevScreen.width / 2) - (promptWidth / 2);
         int boxY = (prevScreen.height / 2) - (promptHeight / 2);
 
-        this.closeButton = new FlatButtonWidget(new Dim2i((boxX + promptWidth) - 84, (boxY + promptHeight) - 24, 80, 20), Component.literal("Close"), this::onClose);
+        this.closeButton = new FlatButtonWidget(new Dim2i((boxX + promptWidth) - 84, (boxY + promptHeight) - 24, 80, 20), Component.translatable("embeddium.prompt.close"), this::onClose);
         this.closeButton.setStyle(createButtonStyle());
 
         this.actionButton = new FlatButtonWidget(new Dim2i((boxX + promptWidth) - 198, (boxY + promptHeight) - 24, 110, 20), this.action.label, this::runAction);

@@ -24,12 +24,12 @@ public class EarlyDriverScanner {
             """;
 
     private static final String INTEL_GEN7_DRIVER_MESSAGE = """
-            The game failed to start because the currently installed Intel Graphics Driver is not compatible.
+            Le jeu n'a pas pu démarrer car le pilote graphique Intel installé n'est pas compatible.
                                         
-            Installed version: ###CURRENT_DRIVER###
-            Required version: 15.33.53.5161 (or newer)
+            Version installée : ###CURRENT_DRIVER###
+            Version requise : 15.33.53.5161 (ou plus récente)
                                         
-            You must update your graphics card driver in order to continue.""";
+            Vous devez mettre à jour le pilote de votre carte graphique pour continuer.""";
 
     private static final String INTEL_GEN7_DRIVER_HELP_URL = "https://github.com/CaffeineMC/sodium-fabric/wiki/Driver-Compatibility#windows-intel-gen7";
 
@@ -53,7 +53,7 @@ public class EarlyDriverScanner {
                 .replace("###HELP_URL###", url));
 
         // Try to show a graphical message box (if the platform supports it) and shut down the game.
-        MessageBox.showMessageBox(null, MessageBox.IconType.ERROR, "Embeddium Renderer - Unsupported Driver", message, url);
+        MessageBox.showMessageBox(null, MessageBox.IconType.ERROR, "Moteur de rendu Embeddium - Pilote non pris en charge", message, url);
         System.exit(1 /* failure code */);
     }
 
